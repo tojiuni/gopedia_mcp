@@ -1,0 +1,21 @@
+{
+  "name": "gopedia-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server wrapping the Gopedia HTTP API",
+  "type": "module",
+  "main": "gopedia-mcp-server.js",
+  "scripts": {
+    "start": "tsx gopedia-mcp-server.ts",
+    "test:mcp": "tsx scripts/mcp-smoke-test.ts",
+    "test:claude-code": "tsx scripts/claude-code-search-test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.2",
+    "dotenv": "^17.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.5.0"
+  }
+}

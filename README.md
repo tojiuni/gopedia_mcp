@@ -1,87 +1,134 @@
-# gopedia_mcp
+# gopedia-mcp-server
 
-Gopedia HTTP API를 MCP 도구(`gopedia_health`, `gopedia_search`, `gopedia_ingest`)로 노출하는 TypeScript stdio 서버입니다.
+A TypeScript stdio MCP server that exposes the [Gopedia](https://github.com/lyckabc/gopedia) HTTP API as MCP tools, enabling AI agents (Claude Code, Cursor, Gemini CLI, etc.) to search, restore, and ingest a structured knowledge graph.
 
-## 요구사항
+## Requirements
 
 - Node.js 18+
-- 실행 중인 Gopedia API (기본: `http://127.0.0.1:18787`)
+- A running Gopedia API (default: `http://127.0.0.1:18787`)
 
-## 설치
+## Installation
 
 ```bash
 npm install
 ```
 
-## 환경변수 (`.env`)
+## Environment (`.env`)
 
-이 프로젝트는 `dotenv`를 사용하므로, 루트의 `.env`에서 Gopedia 호스트를 관리할 수 있습니다.
+This project uses `dotenv`. Configure the Gopedia host in a `.env` file at the project root.
 
 ```env
-# 기본 권장값 (host[:port] 형식)
+# Recommended (host[:port] format)
 GOPEDIA_HOST_DOMAIN=127.0.0.1:18787
 
-# 필요 시 전체 URL로 우선 지정 가능
+# Override with a full URL if needed
 # GOPEDIA_API_URL=http://127.0.0.1:18787
 ```
 
-우선순위:
+Priority order:
+1. `GOPEDIA_API_URL` (full URL)
+2. `GOPEDIA_HOST_DOMAIN` (host[:port] or URL)
+3. Default `127.0.0.1:18787`
 
-1. `GOPEDIA_API_URL` (전체 URL)
-2. `GOPEDIA_HOST_DOMAIN` (host[:port] 또는 URL)
-3. 기본값 `127.0.0.1:18787`
-
-## 실행
+## Start
 
 ```bash
 npm start
 ```
 
-## MCP 도구
+---
 
-- `gopedia_health`: `GET /api/health/deps`
-- `gopedia_search`: `GET /api/search?q=...&format=json`
-- `gopedia_ingest`: `POST /api/ingest`
+## MCP Tools
 
-## 테스트
+| Tool | HTTP | Description |
+|------|------|-------------|
+| `gopedia_health` | `GET /api/health/deps` | Check service and dependency status |
+| `gopedia_search` | `GET /api/search?format=json` | Semantic search (default `detail=summary`) |
+| `gopedia_restore` | `GET /api/restore` | Fetch full section or document from PostgreSQL |
+| `gopedia_ingest` | `POST /api/ingest` | Ingest markdown files into the knowledge graph |
 
-가이드 문서(`gopedia/doc/guide/mcp-testing.md`) 기준으로 현재 프로젝트에서 재현 가능한 스모크 테스트를 제공합니다.
+### Response envelope
 
-```bash
-# Gopedia API가 실행 중이어야 함
-npm run test:mcp
+Every tool returns a consistent JSON envelope:
+
+```json
+{
+  "ok": true,
+  "request_id": "abc123",
+  "data": { ... },
+  "failure": {
+    "code": "NETWORK_ERROR",
+    "message": "...",
+    "retryable": true
+  }
+}
 ```
 
-테스트 수행 내용은 `data/logs/`에 JSON 로그로 저장됩니다.
+Check `failure.retryable` before retrying a failed call.
 
-테스트 항목:
+---
 
-1. MCP 연결 및 `tools/list`
-2. `gopedia_health`
-3. 기본 `gopedia_search` (`query=Introduction`, `detail=summary`)
-4. ingest된 `gopedia`/`neunexus` 기반 난이도별 검색 시나리오
-   - simple: 개요/핵심 키워드 탐색
-   - intermediate: 컴포넌트/파이프라인 맥락 탐색
-   - advanced: 아키텍처 비교/트레이드오프 근거 문맥 탐색 (`detail=full`)
+## MCP Prompt — `gopedia_agent_guide`
 
-## MCP 클라이언트 설정 예시
+The server registers one MCP prompt that teaches an AI agent how to explore Gopedia step-by-step using the tools above.
 
-### Cursor/Claude Code 스타일 (`.mcp.json`)
+**In Claude Code**, inject it as a slash command:
+
+```
+/mcp__gopedia__gopedia_agent_guide
+```
+
+This inserts the full exploration guide into the conversation context so the agent follows the escalation ladder on every subsequent Gopedia query.
+
+### What the prompt covers
+
+- **Escalation ladder** — start with `summary`, stop as soon as context is sufficient
+- **When to call `gopedia_restore`** — only after a search returns `l2_id`/`l1_id` pointers
+- **Comparison queries** — run independent searches per concept, restore top hits, synthesise
+- **Multi-step abstract queries** — decompose into 2–3 focused searches, collect pointers, restore selectively
+- **Citation format** — every answer must include `source_path § section_heading (l2_id: <uuid>)`
+
+### Escalation ladder (summary)
+
+```
+1. gopedia_search(detail=summary)     ← always start here
+2. gopedia_search(detail=standard)    ← when l2_id/l1_id pointers are needed
+3. gopedia_search(detail=full)        ← when surrounding_context is required
+4. gopedia_restore(l2_id)             ← full section body
+5. gopedia_restore(l1_id)             ← full document body (use sparingly)
+```
+
+---
+
+## Client Configuration
+
+### Claude Code (global, all projects)
+
+Register the server globally by adding it to `~/.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "gopedia": {
       "command": "npx",
-      "args": ["tsx", "/Users/dong-hoshin/Documents/dev/gopedia_mcp/gopedia-mcp-server.ts"]
+      "args": ["tsx", "/path/to/gopedia_mcp/gopedia-mcp-server.ts"],
+      "env": {
+        "GOPEDIA_HOST_DOMAIN": "127.0.0.1:18787"
+      }
     }
   }
 }
 ```
 
-### Cursor 프로젝트 설정 (`.cursor/mcp.json`)
+Then inject the agent guide at the start of any Gopedia session:
 
-이 저장소에는 Cursor에서 바로 인식할 수 있도록 `.cursor/mcp.json`도 포함되어 있습니다.
+```
+/mcp__gopedia__gopedia_agent_guide
+```
+
+### Cursor (project-level, `.cursor/mcp.json`)
+
+This repository includes a `.cursor/mcp.json` so Cursor picks up the server automatically.
 
 ### Gemini CLI (`~/.gemini/settings.json`)
 
@@ -91,7 +138,7 @@ npm run test:mcp
     "servers": {
       "gopedia": {
         "command": "npx",
-        "args": ["tsx", "/Users/dong-hoshin/Documents/dev/gopedia_mcp/gopedia-mcp-server.ts"],
+        "args": ["tsx", "/path/to/gopedia_mcp/gopedia-mcp-server.ts"],
         "env": {
           "GOPEDIA_HOST_DOMAIN": "127.0.0.1:18787"
         }
@@ -100,3 +147,20 @@ npm run test:mcp
   }
 }
 ```
+
+---
+
+## Tests
+
+```bash
+# Gopedia API must be running
+npm run test:mcp
+```
+
+Logs are written to `data/logs/` as JSON.
+
+Test scenarios:
+1. MCP connection and `tools/list`
+2. `gopedia_health`
+3. Basic `gopedia_search` (`detail=summary`)
+4. Difficulty-graded search scenarios (simple → intermediate → advanced)

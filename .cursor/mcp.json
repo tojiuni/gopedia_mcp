@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "gopedia": {
+      "command": "npx",
+      "args": ["tsx", "gopedia-mcp-server.ts"],
+      "cwd": "/Users/dong-hoshin/Documents/dev/gopedia_mcp"
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # gopedia-mcp-server
 
-`gopedia-mcp-server`는 [Gopedia](https://github.com/lyckabc/gopedia) HTTP API를 MCP 도구로 노출하는 TypeScript stdio 서버입니다.
+`gopedia-mcp-server`는 [Gopedia](https://github.com/tojiuni/gopedia) HTTP API를 MCP 도구로 노출하는 TypeScript stdio 서버입니다.
 
 ## Quick Start
 

@@ -1,2 +1,27 @@
-node_modules
-data/logs
+# Dependencies
+node_modules/
+
+# Build and cache artifacts
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Runtime logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+data/logs/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS/editor noise
+.DS_Store
+
+# Local AI tool settings
+.gemini/

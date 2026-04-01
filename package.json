@@ -7,9 +7,11 @@
   "scripts": {
     "start": "tsx gopedia-mcp-server.ts",
     "test:mcp": "tsx scripts/mcp-smoke-test.ts",
-    "test:claude-code": "tsx scripts/claude-code-search-test.ts"
+    "test:claude-code": "tsx scripts/claude-code-search-test.ts",
+    "test:agent": "tsx scripts/agent-e2e-test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.81.0",
     "@modelcontextprotocol/sdk": "^1.10.2",
     "dotenv": "^17.3.1"
   },

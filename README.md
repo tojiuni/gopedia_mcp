@@ -43,7 +43,7 @@ npm start
 
 설치 (5분 이내)
 
-- 복사-붙여넣기 가능한 설치 명령어 (Helm 또는 kubectl)
+- 복사-붙여넣기 가능한 설치 명령어 (현재 가이드는 npm 실행 기준)
 - 빠른 설치 명령은 가이드 문서에 포함
 - 상세: [`doc/guide/install-guide.md`](doc/guide/install-guide.md)
 - 요약: [`doc/guide/quick-install-guide.md`](doc/guide/quick-install-guide.md)

@@ -11,9 +11,10 @@
 ## 설치 (복사-붙여넣기)
 
 ```bash
-cd /neunexus/gopedia_mcp
+cd /path/to/gopedia_mcp
 cp .env.example .env
-sed -i 's|^GOPEDIA_HOST_DOMAIN=.*|GOPEDIA_HOST_DOMAIN=http://127.0.0.1:18787|' .env
+# Edit .env and set:
+# GOPEDIA_HOST_DOMAIN=http://127.0.0.1:18787
 npm install
 npm start
 ```

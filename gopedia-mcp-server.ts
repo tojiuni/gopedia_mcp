@@ -6,19 +6,25 @@
  * can search, ingest, and inspect the knowledge graph directly.
  *
  * Tools:
- *   gopedia_health  — GET /api/health/deps
- *   gopedia_search  — GET /api/search?q=...&format=json  (default: detail=summary)
- *   gopedia_restore — GET /api/restore?l2_id=...  or  ?l1_id=...
- *   gopedia_ingest  — POST /api/ingest
+ *   gopedia_health         — GET /api/health/deps
+ *   gopedia_search         — GET /api/search?q=...&format=json  (default: detail=summary)
+ *   gopedia_restore        — GET /api/restore?l2_id=...  or  ?l1_id=...
+ *   gopedia_ingest         — POST /api/ingest
+ *   gardener_health        — GET Gardener /health
+ *   gardener_quality_run   — Dataset → resolve-qrels → eval run → wait → metrics + report
+ *   gardener_run_report    — Aggregate metrics, KPI summary, /details failures for a run id
  *
  * Environment:
- *   GOPEDIA_API_URL      Full base URL of the Gopedia HTTP API (highest priority)
- *   GOPEDIA_HOST_DOMAIN  Host[:port] or full URL for Gopedia API (default: 127.0.0.1:18787)
+ *   GOPEDIA_API_URL       Full base URL of the Gopedia HTTP API (highest priority)
+ *   GOPEDIA_HOST_DOMAIN   Host[:port] or full URL for Gopedia API (default: 127.0.0.1:18787)
+ *   GARDENER_API_URL      Full base URL of Gardener (default from GARDENER_HOST_DOMAIN)
+ *   GARDENER_HOST_DOMAIN  Host[:port] or full URL (default: 127.0.0.1:18880)
  */
 
 /// <reference types="node" />
 
 import "dotenv/config";
+import { readFile } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -29,6 +35,13 @@ const normalizedHostDomain = /^https?:\/\//.test(hostDomainFromEnv)
   ? hostDomainFromEnv
   : `http://${hostDomainFromEnv}`;
 const BASE_URL = (apiUrlFromEnv ?? normalizedHostDomain).replace(/\/$/, "");
+
+const gardenerApiUrlFromEnv = process.env["GARDENER_API_URL"]?.trim();
+const gardenerHostFromEnv = process.env["GARDENER_HOST_DOMAIN"]?.trim() ?? "127.0.0.1:18880";
+const normalizedGardenerHost = /^https?:\/\//.test(gardenerHostFromEnv)
+  ? gardenerHostFromEnv
+  : `http://${gardenerHostFromEnv}`;
+const GARDENER_BASE_URL = (gardenerApiUrlFromEnv ?? normalizedGardenerHost).replace(/\/$/, "");
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -108,11 +121,88 @@ async function post(path: string, body: unknown): Promise<string> {
   }
 }
 
+/** Plain JSON from Gardener (FastAPI); not wrapped in Gopedia's ok/failure envelope. */
+async function gardenerFetch(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number }
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const timeoutMs = init?.timeoutMs ?? 60_000;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const headers = new Headers(init?.headers);
+    if (init?.body != null && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+    const res = await fetch(`${GARDENER_BASE_URL}${path}`, {
+      ...init,
+      signal: ctrl.signal,
+      headers,
+    });
+    const text = await res.text();
+    let body: unknown;
+    try {
+      body = JSON.parse(text) as unknown;
+    } catch {
+      body = { raw: text };
+    }
+    return { ok: res.ok, status: res.status, body };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      body: { error: String(err), gardener_base_url: GARDENER_BASE_URL },
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function aggregateMetricsFromList(metrics: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!Array.isArray(metrics)) return out;
+  for (const m of metrics) {
+    if (!m || typeof m !== "object") continue;
+    const row = m as Record<string, unknown>;
+    if (row["scope"] !== "aggregate") continue;
+    const name = row["metric_name"];
+    const val = row["value"];
+    if (typeof name === "string" && typeof val === "number") out[name] = val;
+  }
+  return out;
+}
+
+function metricFromQueryRow(row: Record<string, unknown>, name: string): number | undefined {
+  const metrics = row["metrics"];
+  if (!Array.isArray(metrics)) return undefined;
+  for (const m of metrics) {
+    if (m && typeof m === "object") {
+      const o = m as Record<string, unknown>;
+      if (o["metric_name"] === name && typeof o["value"] === "number") return o["value"];
+    }
+  }
+  return undefined;
+}
+
+function safeJsonParse(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { _parse_error: true, _raw_excerpt: text.slice(0, 2000) };
+  }
+}
+
+/** Matches Python: (recall_at_5 or 0) == 0 */
+function recallAt5IsFailure(value: unknown): boolean {
+  const n = value === null || value === undefined ? 0 : Number(value);
+  return !Number.isFinite(n) || n === 0;
+}
+
 // ── server ────────────────────────────────────────────────────────────────────
 
 const server = new McpServer({
   name: "gopedia",
-  version: "2.0.0",
+  version: "2.1.0",
 });
 
 // ── tool: health ──────────────────────────────────────────────────────────────
@@ -275,6 +365,385 @@ path must be an absolute path or a repo-relative path that the Gopedia API proce
   }
 );
 
+// ── tool: gardener health ─────────────────────────────────────────────────────
+
+server.registerTool(
+  "gardener_health",
+  {
+    description:
+      "Check Gardener Gopedia eval service (GET /health). Optional Gopedia preflight: deps + sample search.",
+    inputSchema: {
+      gopedia_preflight: z
+        .boolean()
+        .optional()
+        .describe("If true, also call Gopedia GET /api/health/deps and a sample search (default: false)"),
+      probe_query: z
+        .string()
+        .optional()
+        .describe("Sample search query when gopedia_preflight is true (default: osteon openstack)"),
+    },
+  },
+  async ({ gopedia_preflight, probe_query }) => {
+    const gh = await gardenerFetch("/health", { method: "GET", timeoutMs: 15_000 });
+    const report: Record<string, unknown> = {
+      gardener_base_url: GARDENER_BASE_URL,
+      gardener_health_ok: gh.ok,
+      gardener_health_status: gh.status,
+      gardener_health: gh.body,
+    };
+    if (gopedia_preflight) {
+      const deps = await get("/api/health/deps");
+      const dq = probe_query ?? "osteon openstack";
+      const sp = new URLSearchParams({ q: dq, format: "json", detail: "summary" });
+      const search = await get(`/api/search?${sp.toString()}`);
+      let depsParsed: unknown;
+      let searchParsed: unknown;
+      try {
+        depsParsed = JSON.parse(deps);
+      } catch {
+        depsParsed = deps;
+      }
+      try {
+        searchParsed = JSON.parse(search);
+      } catch {
+        searchParsed = search;
+      }
+      report["gopedia_preflight"] = {
+        deps: depsParsed,
+        search: searchParsed,
+      };
+    }
+    return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }] };
+  }
+);
+
+// ── tool: gardener quality run (full pipeline) ────────────────────────────────
+
+server.registerTool(
+  "gardener_quality_run",
+  {
+    description: `Run the Gardener retrieval quality pipeline end-to-end.
+
+**Mode A — quality_preset (recommended):** POST /runs with e.g. quality_preset: "osteon" only (no dataset_id). Gardener loads dataset/sample_osteon_guide_30_v2.json, registers it like POST /datasets, sets resolve_before_eval=true and stores quality_preset in params_json.
+
+**Mode B — dataset file:** POST /datasets from dataset_json_path → resolve-qrels → POST /runs with dataset_id.
+
+Then: POST /runs/{id}/wait → metrics, kpi-summary, details, queries in the JSON report.
+
+Requires Gardener and Gopedia HTTP APIs reachable.`,
+    inputSchema: {
+      quality_preset: z
+        .string()
+        .optional()
+        .describe(
+          'Bundled dataset key (e.g. "osteon"). Mutually exclusive with dataset_json_path. Skips manual POST /datasets + resolve-qrels.'
+        ),
+      dataset_json_path: z
+        .string()
+        .optional()
+        .describe(
+          "Absolute path to Gardener dataset JSON — required when quality_preset is omitted (queries + qrels)"
+        ),
+      unique_dataset_name: z
+        .boolean()
+        .optional()
+        .describe("If true (default), append _run_<unix_ms> to dataset name (file mode only)"),
+      gopedia_preflight: z.boolean().optional().describe("Preflight Gopedia before Gardener steps (default: true)"),
+      probe_query: z.string().optional().describe("Sample search query for preflight"),
+      resolve_target_url: z
+        .string()
+        .optional()
+        .describe("Override Gopedia base URL for POST .../resolve-qrels (?target_url=)"),
+      top_k: z.number().int().min(1).max(50).optional().describe("Retrieval depth (default: 10)"),
+      search_detail: z.string().optional().describe("Gopedia search detail, e.g. summary (default: summary)"),
+      resolve_before_eval: z
+        .boolean()
+        .optional()
+        .describe("File mode only: resolve unresolved qrels before eval (default: true). Preset mode forces true on the server."),
+      wait_timeout_ms: z.number().optional().describe("Max wait for eval run (default: 360000)"),
+    },
+  },
+  async ({
+    quality_preset,
+    dataset_json_path,
+    unique_dataset_name,
+    gopedia_preflight,
+    probe_query,
+    resolve_target_url,
+    top_k,
+    search_detail,
+    resolve_before_eval,
+    wait_timeout_ms,
+  }) => {
+    const steps: Array<{ step: string; ok: boolean; detail?: unknown }> = [];
+    const report: Record<string, unknown> = {
+      ok: false,
+      gardener_base_url: GARDENER_BASE_URL,
+      gopedia_base_url: BASE_URL,
+      steps,
+    };
+
+    const fail = (step: string, message: string, detail?: unknown) => {
+      steps.push({ step, ok: false, detail: detail ?? message });
+      report["ok"] = false;
+      report["failure"] = { step, message, detail };
+      return JSON.stringify(report, null, 2);
+    };
+
+    if (gopedia_preflight !== false) {
+      const depsRaw = await get("/api/health/deps");
+      let depsOk = false;
+      try {
+        const env = JSON.parse(depsRaw) as Envelope;
+        depsOk = env.ok === true;
+      } catch {
+        depsOk = false;
+      }
+      steps.push({ step: "gopedia_health_deps", ok: depsOk, detail: safeJsonParse(depsRaw) });
+      const pq = probe_query ?? "osteon openstack";
+      const sp = new URLSearchParams({ q: pq, format: "json", detail: "summary" });
+      const sRaw = await get(`/api/search?${sp.toString()}`);
+      let searchOk = false;
+      let nResults = 0;
+      try {
+        const env = JSON.parse(sRaw) as Envelope & { data?: { results?: unknown[] } };
+        searchOk = env.ok === true;
+        nResults = Array.isArray(env.data?.results) ? env.data!.results!.length : 0;
+      } catch {
+        searchOk = false;
+      }
+      steps.push({
+        step: "gopedia_search_probe",
+        ok: searchOk,
+        detail: { result_count: nResults, raw: safeJsonParse(sRaw) },
+      });
+      report["gopedia_preflight"] = { deps: safeJsonParse(depsRaw), search_probe_results: nResults };
+      if (!depsOk) return { content: [{ type: "text", text: fail("gopedia_preflight", "Gopedia /api/health/deps not ok") }] };
+    }
+
+    const preset = (quality_preset ?? "").trim();
+    const path = (dataset_json_path ?? "").trim();
+    if (preset && path) {
+      return {
+        content: [{ type: "text", text: fail("invalid_input", "Provide exactly one of quality_preset or dataset_json_path") }],
+      };
+    }
+    if (!preset && !path) {
+      return {
+        content: [{ type: "text", text: fail("invalid_input", "Provide quality_preset (e.g. osteon) or dataset_json_path") }],
+      };
+    }
+
+    let runBody: Record<string, unknown>;
+
+    if (preset) {
+      report["quality_preset"] = preset;
+      runBody = {
+        quality_preset: preset,
+        top_k: top_k ?? 10,
+        search_detail: search_detail ?? "summary",
+      };
+      steps.push({
+        step: "gardener_quality_preset_mode",
+        ok: true,
+        detail: "POST /runs with quality_preset only (server loads bundled JSON, resolve_before_eval=true)",
+      });
+    } else {
+      let rawJson: string;
+      try {
+        rawJson = await readFile(path, "utf-8");
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: fail("read_dataset", `Cannot read dataset_json_path: ${String(e)}`) }],
+        };
+      }
+
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(rawJson) as Record<string, unknown>;
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: fail("parse_dataset", `Invalid JSON: ${String(e)}`) }],
+        };
+      }
+
+      if (unique_dataset_name !== false) {
+        const baseName = typeof payload["name"] === "string" ? payload["name"] : "dataset";
+        payload["name"] = `${baseName}_run_${Date.now()}`;
+      }
+
+      const dsPost = await gardenerFetch("/datasets", { method: "POST", body: JSON.stringify(payload), timeoutMs: 120_000 });
+      steps.push({ step: "gardener_post_dataset", ok: dsPost.ok, detail: { status: dsPost.status, body: dsPost.body } });
+      if (!dsPost.ok) {
+        return { content: [{ type: "text", text: fail("gardener_post_dataset", "POST /datasets failed", dsPost.body) }] };
+      }
+
+      const dsBody = dsPost.body as Record<string, unknown>;
+      const datasetId = typeof dsBody["id"] === "string" ? dsBody["id"] : "";
+      if (!datasetId) {
+        return { content: [{ type: "text", text: fail("gardener_post_dataset", "No dataset id in response", dsBody) }] };
+      }
+      report["dataset_id"] = datasetId;
+      report["dataset_name"] = dsBody["name"];
+
+      let resolvePath = `/datasets/${encodeURIComponent(datasetId)}/resolve-qrels`;
+      if (resolve_target_url?.trim()) {
+        resolvePath += `?target_url=${encodeURIComponent(resolve_target_url.trim())}`;
+      }
+      const rq = await gardenerFetch(resolvePath, { method: "POST", timeoutMs: 180_000 });
+      steps.push({ step: "gardener_resolve_qrels", ok: rq.ok, detail: { status: rq.status, body: rq.body } });
+      if (!rq.ok) {
+        return { content: [{ type: "text", text: fail("gardener_resolve_qrels", "POST .../resolve-qrels failed", rq.body) }] };
+      }
+      report["resolve_qrels"] = rq.body;
+
+      runBody = {
+        dataset_id: datasetId,
+        top_k: top_k ?? 10,
+        search_detail: search_detail ?? "summary",
+        resolve_before_eval: resolve_before_eval !== false,
+      };
+    }
+
+    const er = await gardenerFetch("/runs", { method: "POST", body: JSON.stringify(runBody), timeoutMs: 60_000 });
+    steps.push({ step: "gardener_post_run", ok: er.ok, detail: { status: er.status, body: er.body } });
+    if (!er.ok) {
+      return { content: [{ type: "text", text: fail("gardener_post_run", "POST /runs failed", er.body) }] };
+    }
+    const erBody = er.body as Record<string, unknown>;
+    const runId = typeof erBody["id"] === "string" ? erBody["id"] : "";
+    if (!runId) {
+      return { content: [{ type: "text", text: fail("gardener_post_run", "No run id in response", erBody) }] };
+    }
+    report["run_id"] = runId;
+    if (preset && typeof erBody["dataset_id"] === "string") {
+      report["dataset_id"] = erBody["dataset_id"];
+    }
+
+    const waitMs = wait_timeout_ms ?? 360_000;
+    const wr = await gardenerFetch(`/runs/${encodeURIComponent(runId)}/wait`, {
+      method: "POST",
+      timeoutMs: waitMs + 10_000,
+    });
+    steps.push({ step: "gardener_wait_run", ok: wr.ok, detail: { status: wr.status, body: wr.body } });
+    if (!wr.ok) {
+      return { content: [{ type: "text", text: fail("gardener_wait_run", "POST .../wait failed or timeout", wr.body) }] };
+    }
+    report["run"] = wr.body;
+
+    const wrBody = wr.body as Record<string, unknown>;
+    if (wrBody["status"] === "failed") {
+      report["ok"] = false;
+      report["failure"] = { step: "eval_run", message: "Eval run status is failed", detail: wrBody["error_message"] };
+    }
+
+    const metricsRes = await gardenerFetch(`/runs/${encodeURIComponent(runId)}/metrics`, { method: "GET", timeoutMs: 60_000 });
+    steps.push({ step: "gardener_metrics", ok: metricsRes.ok, detail: { status: metricsRes.status } });
+    const metrics = metricsRes.ok ? metricsRes.body : [];
+    report["metrics"] = metrics;
+    report["aggregate_metrics"] = aggregateMetricsFromList(metrics);
+
+    const kpi = await gardenerFetch(`/runs/${encodeURIComponent(runId)}/kpi-summary`, { method: "GET", timeoutMs: 30_000 });
+    if (kpi.ok) report["kpi_summary"] = kpi.body;
+
+    const detailsRes = await gardenerFetch(`/runs/${encodeURIComponent(runId)}/details`, { method: "GET", timeoutMs: 60_000 });
+    if (detailsRes.ok) {
+      const dBody = detailsRes.body as { rows?: Array<Record<string, unknown>> };
+      const rows = Array.isArray(dBody.rows) ? dBody.rows : [];
+      const recall5Zero = rows.filter((r) => recallAt5IsFailure(r["recall_at_5"]));
+      report["details"] = dBody;
+      report["recall_at_5_zero_count"] = recall5Zero.length;
+      report["recall_at_5_zero_sample"] = recall5Zero.slice(0, 12);
+    } else {
+      steps.push({ step: "gardener_details", ok: false, detail: detailsRes.body });
+    }
+
+    const queriesRes = await gardenerFetch(`/runs/${encodeURIComponent(runId)}/queries`, { method: "GET", timeoutMs: 120_000 });
+    if (queriesRes.ok) {
+      const qrows = Array.isArray(queriesRes.body) ? (queriesRes.body as Record<string, unknown>[]) : [];
+      const fails = qrows.filter((r) => (metricFromQueryRow(r, "Recall@5") ?? 0) === 0);
+      report["queries_total"] = qrows.length;
+      report["queries_recall5_zero_count"] = fails.length;
+      report["queries_recall5_zero_sample"] = fails.slice(0, 10).map((r) => ({
+        external_id: r["external_id"],
+        query_text: typeof r["query_text"] === "string" ? r["query_text"].slice(0, 120) : r["query_text"],
+        top1_title: Array.isArray(r["hits"]) && r["hits"][0] ? (r["hits"][0] as { title?: string }).title : undefined,
+      }));
+    }
+
+    if (!report["failure"]) report["ok"] = wrBody["status"] === "completed";
+    return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }] };
+  }
+);
+
+// ── tool: gardener run report ─────────────────────────────────────────────────
+
+server.registerTool(
+  "gardener_run_report",
+  {
+    description:
+      "Fetch a structured quality report for an existing Gardener eval run: GET /runs/{id}, /metrics, /kpi-summary, /details, /queries (failure samples).",
+    inputSchema: {
+      run_id: z.string().describe("Eval run UUID from gardener_quality_run or Gardener API"),
+      include_queries: z.boolean().optional().describe("Include per-query rows sample (default: true)"),
+      failure_sample_limit: z.number().int().min(1).max(50).optional().describe("Max Recall@5=0 rows to list (default: 10)"),
+    },
+  },
+  async ({ run_id, include_queries, failure_sample_limit }) => {
+    const rid = run_id.trim();
+    const lim = failure_sample_limit ?? 10;
+    const report: Record<string, unknown> = {
+      ok: true,
+      gardener_base_url: GARDENER_BASE_URL,
+      run_id: rid,
+    };
+
+    const runRes = await gardenerFetch(`/runs/${encodeURIComponent(rid)}`, { method: "GET", timeoutMs: 30_000 });
+    report["run"] = runRes.body;
+    if (!runRes.ok) {
+      report["ok"] = false;
+      report["failure"] = "GET /runs/{id} failed";
+      return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }] };
+    }
+
+    const metricsRes = await gardenerFetch(`/runs/${encodeURIComponent(rid)}/metrics`, { method: "GET", timeoutMs: 60_000 });
+    const metrics = metricsRes.ok ? metricsRes.body : [];
+    report["metrics"] = metrics;
+    report["aggregate_metrics"] = aggregateMetricsFromList(metrics);
+
+    const kpi = await gardenerFetch(`/runs/${encodeURIComponent(rid)}/kpi-summary`, { method: "GET", timeoutMs: 30_000 });
+    if (kpi.ok) report["kpi_summary"] = kpi.body;
+
+    const detailsRes = await gardenerFetch(`/runs/${encodeURIComponent(rid)}/details`, { method: "GET", timeoutMs: 60_000 });
+    if (detailsRes.ok) {
+      const dBody = detailsRes.body as { rows?: Array<Record<string, unknown>> };
+      const rows = Array.isArray(dBody.rows) ? dBody.rows : [];
+      const recall5Zero = rows.filter((r) => recallAt5IsFailure(r["recall_at_5"]));
+      report["details"] = dBody;
+      report["recall_at_5_zero_count"] = recall5Zero.length;
+      report["recall_at_5_zero_sample"] = recall5Zero.slice(0, lim);
+    }
+
+    if (include_queries !== false) {
+      const queriesRes = await gardenerFetch(`/runs/${encodeURIComponent(rid)}/queries`, { method: "GET", timeoutMs: 120_000 });
+      if (queriesRes.ok) {
+        const qrows = Array.isArray(queriesRes.body) ? (queriesRes.body as Record<string, unknown>[]) : [];
+        const fails = qrows.filter((r) => (metricFromQueryRow(r, "Recall@5") ?? 0) === 0);
+        report["queries_total"] = qrows.length;
+        report["queries_recall5_zero_count"] = fails.length;
+        report["queries_recall5_zero_sample"] = fails.slice(0, lim).map((r) => ({
+          external_id: r["external_id"],
+          query_text: r["query_text"],
+          top1_title: Array.isArray(r["hits"]) && r["hits"][0] ? (r["hits"][0] as { title?: string }).title : undefined,
+          hits: Array.isArray(r["hits"]) ? r["hits"].slice(0, 3) : [],
+        }));
+      }
+    }
+
+    return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }] };
+  }
+);
+
 // ── prompt: agent guide ───────────────────────────────────────────────────────
 
 server.registerPrompt(
@@ -344,6 +813,60 @@ Always follow the escalation ladder below — stop as soon as you have enough co
 Every answer must include citations in the form:
   [source_path § section_heading] (l2_id: <uuid>)
 Never answer from memory alone — always ground claims in retrieved content.`,
+        },
+      },
+    ],
+  })
+);
+
+// ── prompt: Gardener quality eval ─────────────────────────────────────────────
+
+server.registerPrompt(
+  "gardener_quality_guide",
+  {
+    description:
+      "Instructions for running Gardener retrieval QA/eval against Gopedia: health checks, dataset path, full pipeline, and how to read the JSON report.",
+  },
+  () => ({
+    messages: [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text: `You can measure Gopedia retrieval quality with Gardener (HTTP API) via these MCP tools.
+
+## Prerequisites
+- Gopedia API running (default base from GOPEDIA_API_URL or GOPEDIA_HOST_DOMAIN, e.g. http://127.0.0.1:18787).
+- Gardener API running (GARDENER_API_URL or GARDENER_HOST_DOMAIN, e.g. http://127.0.0.1:18880).
+- Either a bundled **quality_preset** (e.g. osteon — see GET /config/defaults → quality_presets, quality_preset_files) or a local dataset JSON path.
+
+## Recommended flow (preset — simplest)
+1. gardener_health({ gopedia_preflight: true })
+2. gardener_quality_run({
+     quality_preset: "osteon",
+     gopedia_preflight: true,
+     top_k: 10,
+     search_detail: "summary",
+     wait_timeout_ms: 400000
+   })
+   Gardener POST /runs loads dataset/sample_osteon_guide_30_v2.json, registers it like POST /datasets, sets resolve_before_eval=true, stores quality_preset in params_json.
+
+## Alternative (custom dataset file)
+gardener_quality_run({ dataset_json_path: "<absolute path>", unique_dataset_name: true, ... }) — create dataset → resolve-qrels → POST /runs with dataset_id.
+3. Parse the tool response JSON. Key fields:
+   - aggregate_metrics — Recall@5, MRR@10, nDCG@10, P@3 (scope aggregate).
+   - kpi_summary — quality/efficiency roll-up when available.
+   - details.rows — per-query recall_at_5, top1_l3_id (GET /runs/{id}/details).
+   - queries_recall5_zero_sample — queries where Recall@5 is 0, with hit snippets for debugging.
+
+## Existing run id
+- gardener_run_report({ run_id, failure_sample_limit: 10 }) — same report shape without re-running the pipeline.
+
+## Environment
+- GARDENER_API_URL overrides host/port for all Gardener calls.
+- Resolve step uses Gardener's configured Gopedia URL unless you pass resolve_target_url on the run tool.
+
+Always surface the numeric aggregate metrics and a short summary of failure samples when presenting results to the user.`,
         },
       },
     ],

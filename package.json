@@ -7,6 +7,8 @@
   "scripts": {
     "start": "tsx gopedia-mcp-server.ts",
     "test:mcp": "tsx scripts/mcp-smoke-test.ts",
+    "test:gardener-mcp": "tsx scripts/gardener-mcp-test.ts",
+    "test:gardener-e2e": "tsx scripts/gardener-quality-e2e-test.ts",
     "test:claude-code": "tsx scripts/claude-code-search-test.ts",
     "test:agent": "tsx scripts/agent-e2e-test.ts"
   },

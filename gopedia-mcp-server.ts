@@ -210,11 +210,18 @@ const server = new McpServer({
 server.registerTool(
   "gopedia_health",
   {
-    description: "Check Gopedia service health and dependency status (Postgres, Qdrant, TypeDB, Phloem).",
+    description: "Check Gopedia service health, dependency status (Postgres, Qdrant, TypeDB, Phloem), and version information.",
   },
   async () => {
-    const text = await get("/api/health/deps");
-    return { content: [{ type: "text", text }] };
+    const [healthResult, versionResult] = await Promise.allSettled([
+      get("/api/health/deps"),
+      get("/api/version"),
+    ]);
+    const health = healthResult.status === "fulfilled" ? safeJsonParse(healthResult.value) : { error: "health fetch failed" };
+    const version = versionResult.status === "fulfilled" ? safeJsonParse(versionResult.value) : { error: "version fetch not available" };
+    return {
+      content: [{ type: "text", text: JSON.stringify({ ...(health as object), gopedia_version: version }, null, 2) }],
+    };
   }
 );
 

@@ -27,6 +27,8 @@ import "dotenv/config";
 import { readFile } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createServer } from "node:http";
 import { z } from "zod";
 
 const apiUrlFromEnv = process.env["GOPEDIA_API_URL"]?.trim();
@@ -882,5 +884,18 @@ Always surface the numeric aggregate metrics and a short summary of failure samp
 
 // ── start ─────────────────────────────────────────────────────────────────────
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+const httpPort = process.env["MCP_HTTP_PORT"] ? parseInt(process.env["MCP_HTTP_PORT"], 10) : undefined;
+
+if (httpPort) {
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const httpServer = createServer(async (req, res) => {
+    await transport.handleRequest(req, res);
+  });
+  httpServer.listen(httpPort, () => {
+    process.stderr.write(`gopedia-mcp HTTP listening on :${httpPort}\n`);
+  });
+  await server.connect(transport);
+} else {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}

@@ -388,12 +388,21 @@ source_path must be an absolute path or a repo-relative path that the Gopedia AP
           "Use when files were added in the same git commit as a previous ingest " +
           "and were skipped due to hash deduplication. Default: false."
         ),
+      ticket_id: z
+        .string()
+        .optional()
+        .describe(
+          "goquest sub-ticket ID that triggered this ingest. " +
+          "When provided, TypeDB records a provenance link: document → ticket, " +
+          "enabling 'who worked on this document and who requested it' queries."
+        ),
     },
   },
-  async ({ source_path, project_id, force }) => {
+  async ({ source_path, project_id, force, ticket_id }) => {
     const body: Record<string, unknown> = { path: source_path };
     if (project_id !== undefined) body.project_id = project_id;
     if (force) body.force = true;
+    if (ticket_id !== undefined) body.ticket_id = ticket_id;
 
     const text = await post("/api/ingest", body);
     return { content: [{ type: "text", text }] };

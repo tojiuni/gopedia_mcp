@@ -405,18 +405,18 @@ path must be an absolute path or a repo-relative path that the Gopedia API proce
 server.registerTool(
   "gopedia_delete",
   {
-    description: `Delete a document from the Gopedia knowledge graph by source_path.
+    description: `Delete a document from the Gopedia knowledge graph by path.
 
 Removes Qdrant vectors and all Postgres rows (L1/L2/L3) via CASCADE.
 Use when a file has been removed from the source repo and should no longer appear in search results.`,
     inputSchema: {
-      source_path: z
+      path: z
         .string()
         .describe("Absolute source path of the document to delete (e.g. /data/geneso/universitas/lymphhub/some-file.md)"),
     },
   },
-  async ({ source_path }) => {
-    const text = await del("/api/documents", { source_path });
+  async ({ path }) => {
+    const text = await del("/api/documents", { source_path: path });
     return { content: [{ type: "text", text }] };
   }
 );

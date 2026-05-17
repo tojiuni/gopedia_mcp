@@ -363,11 +363,20 @@ path must be an absolute path or a repo-relative path that the Gopedia API proce
         .int()
         .optional()
         .describe("Associate the ingest with a project integer ID"),
+      force: z
+        .boolean()
+        .optional()
+        .describe(
+          "Force full re-ingest even if the project content hash is unchanged. " +
+          "Use when files were added in the same git commit as a previous ingest " +
+          "and were skipped due to hash deduplication. Default: false."
+        ),
     },
   },
-  async ({ path, project_id }) => {
+  async ({ path, project_id, force }) => {
     const body: Record<string, unknown> = { path };
     if (project_id !== undefined) body.project_id = project_id;
+    if (force) body.force = true;
 
     const text = await post("/api/ingest", body);
     return { content: [{ type: "text", text }] };

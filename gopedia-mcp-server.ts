@@ -10,6 +10,7 @@
  *   gopedia_search         — GET /api/search?q=...&format=json  (default: detail=summary)
  *   gopedia_restore        — GET /api/restore?l2_id=...  or  ?l1_id=...
  *   gopedia_ingest         — POST /api/ingest
+ *   gopedia_delete         — DELETE /api/documents
  *   gardener_health        — GET Gardener /health
  *   gardener_quality_run   — Dataset → resolve-qrels → eval run → wait → metrics + report
  *   gardener_run_report    — Aggregate metrics, KPI summary, /details failures for a run id
@@ -98,6 +99,22 @@ function toEnvelope(raw: unknown, httpOk: boolean): Envelope {
 async function get(path: string): Promise<string> {
   try {
     const res = await fetch(`${BASE_URL}${path}`);
+    const text = await res.text();
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { parsed = { raw: text, status: res.status }; }
+    return JSON.stringify(toEnvelope(parsed, res.ok), null, 2);
+  } catch (err) {
+    return JSON.stringify({ ok: false, failure: { code: "NETWORK_ERROR", message: String(err), retryable: true } } satisfies Envelope, null, 2);
+  }
+}
+
+async function del(path: string, body: unknown): Promise<string> {
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
     const text = await res.text();
     let parsed: unknown;
     try { parsed = JSON.parse(text); } catch { parsed = { raw: text, status: res.status }; }
@@ -363,13 +380,43 @@ path must be an absolute path or a repo-relative path that the Gopedia API proce
         .int()
         .optional()
         .describe("Associate the ingest with a project integer ID"),
+      force: z
+        .boolean()
+        .optional()
+        .describe(
+          "Force full re-ingest even if the project content hash is unchanged. " +
+          "Use when files were added in the same git commit as a previous ingest " +
+          "and were skipped due to hash deduplication. Default: false."
+        ),
     },
   },
-  async ({ path, project_id }) => {
+  async ({ path, project_id, force }) => {
     const body: Record<string, unknown> = { path };
     if (project_id !== undefined) body.project_id = project_id;
+    if (force) body.force = true;
 
     const text = await post("/api/ingest", body);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: delete ──────────────────────────────────────────────────────────────
+
+server.registerTool(
+  "gopedia_delete",
+  {
+    description: `Delete a document from the Gopedia knowledge graph by source_path.
+
+Removes Qdrant vectors and all Postgres rows (L1/L2/L3) via CASCADE.
+Use when a file has been removed from the source repo and should no longer appear in search results.`,
+    inputSchema: {
+      source_path: z
+        .string()
+        .describe("Absolute source path of the document to delete (e.g. /data/geneso/universitas/lymphhub/some-file.md)"),
+    },
+  },
+  async ({ source_path }) => {
+    const text = await del("/api/documents", { source_path });
     return { content: [{ type: "text", text }] };
   }
 );

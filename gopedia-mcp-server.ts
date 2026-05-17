@@ -108,10 +108,10 @@ async function get(path: string): Promise<string> {
   }
 }
 
-async function del(path: string, body: unknown): Promise<string> {
+async function jsonFetch(method: string, path: string, body: unknown): Promise<string> {
   try {
     const res = await fetch(`${BASE_URL}${path}`, {
-      method: "DELETE",
+      method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
@@ -125,19 +125,11 @@ async function del(path: string, body: unknown): Promise<string> {
 }
 
 async function post(path: string, body: unknown): Promise<string> {
-  try {
-    const res = await fetch(`${BASE_URL}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const text = await res.text();
-    let parsed: unknown;
-    try { parsed = JSON.parse(text); } catch { parsed = { raw: text, status: res.status }; }
-    return JSON.stringify(toEnvelope(parsed, res.ok), null, 2);
-  } catch (err) {
-    return JSON.stringify({ ok: false, failure: { code: "NETWORK_ERROR", message: String(err), retryable: true } } satisfies Envelope, null, 2);
-  }
+  return jsonFetch("POST", path, body);
+}
+
+async function del(path: string, body: unknown): Promise<string> {
+  return jsonFetch("DELETE", path, body);
 }
 
 /** Plain JSON from Gardener (FastAPI); not wrapped in Gopedia's ok/failure envelope. */

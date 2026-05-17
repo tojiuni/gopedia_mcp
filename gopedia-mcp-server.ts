@@ -372,9 +372,9 @@ server.registerTool(
   {
     description: `Ingest a markdown file or directory into the Gopedia knowledge graph (synchronous, 30-minute timeout).
 
-path must be an absolute path or a repo-relative path that the Gopedia API process can access.`,
+source_path must be an absolute path or a repo-relative path that the Gopedia API process can access.`,
     inputSchema: {
-      path: z.string().describe("Absolute or repo-relative path to ingest"),
+      source_path: z.string().describe("Absolute or repo-relative path to ingest"),
       project_id: z
         .number()
         .int()
@@ -390,8 +390,8 @@ path must be an absolute path or a repo-relative path that the Gopedia API proce
         ),
     },
   },
-  async ({ path, project_id, force }) => {
-    const body: Record<string, unknown> = { path };
+  async ({ source_path, project_id, force }) => {
+    const body: Record<string, unknown> = { path: source_path };
     if (project_id !== undefined) body.project_id = project_id;
     if (force) body.force = true;
 
@@ -405,18 +405,18 @@ path must be an absolute path or a repo-relative path that the Gopedia API proce
 server.registerTool(
   "gopedia_delete",
   {
-    description: `Delete a document from the Gopedia knowledge graph by path.
+    description: `Delete a document from the Gopedia knowledge graph by source_path.
 
 Removes Qdrant vectors and all Postgres rows (L1/L2/L3) via CASCADE.
 Use when a file has been removed from the source repo and should no longer appear in search results.`,
     inputSchema: {
-      path: z
+      source_path: z
         .string()
         .describe("Absolute source path of the document to delete (e.g. /data/geneso/universitas/lymphhub/some-file.md)"),
     },
   },
-  async ({ path }) => {
-    const text = await del("/api/documents", { source_path: path });
+  async ({ source_path }) => {
+    const text = await del("/api/documents", { source_path });
     return { content: [{ type: "text", text }] };
   }
 );

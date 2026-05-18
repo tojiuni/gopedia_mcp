@@ -253,14 +253,18 @@ server.registerTool(
 
 ## Escalation order — always start cheap, escalate only when needed
   1. detail=summary  (default) — title, snippet, source_path, l3_id, score
-                                  Start here. Stop if snippet is sufficient to answer.
+                                  Use for most queries.
   2. detail=standard           — summary + project_id, l1_id, l2_id, section_heading, breadcrumb
-                                  Use when you need l2_id/l1_id pointers for gopedia_restore.
+                                  Use when section or document IDs are needed.
   3. detail=full               — all fields including surrounding_context
                                   Use only when surrounding context is required.
-  4. detail=meta               — l3_id, score, title, source_path, tags (ticket metadata)
-  5. gopedia_restore(l2_id)    — full section body (call after obtaining l2_id above)
-  6. gopedia_restore(l1_id)    — full document body (use sparingly)
+  4. gopedia_restore(l2_id)    — full section body (call after obtaining l2_id above)
+  5. gopedia_restore(l1_id)    — full document body (use sparingly)
+
+  Lateral preset (not an escalation step):
+  - detail=meta — l3_id, score, title, source_path, tags
+                  Use to check goquest ticket metadata (status, priority, domain, etc.)
+                  without fetching snippet content.
 
 ## Comparison queries ("A vs B")
   Run independent searches per concept, collect l2_id pointers,
@@ -278,7 +282,7 @@ detail presets (controls which fields are returned):
 
 fields — comma-separated list of exact field names; overrides detail when provided.
          Valid keys: doc_id, doc_name, project_id, l1_id, l2_id, l3_id, score, title,
-         section_heading, snippet, source_path, breadcrumb, surrounding_context`,
+         section_heading, snippet, source_path, breadcrumb, surrounding_context, tags`,
     inputSchema: {
       query: z.string().describe("Search query text"),
       detail: z

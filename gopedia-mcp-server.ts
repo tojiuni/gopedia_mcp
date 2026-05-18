@@ -258,8 +258,9 @@ server.registerTool(
                                   Use when you need l2_id/l1_id pointers for gopedia_restore.
   3. detail=full               — all fields including surrounding_context
                                   Use only when surrounding context is required.
-  4. gopedia_restore(l2_id)    — full section body (call after obtaining l2_id above)
-  5. gopedia_restore(l1_id)    — full document body (use sparingly)
+  4. detail=meta               — l3_id, score, title, source_path, tags (ticket metadata)
+  5. gopedia_restore(l2_id)    — full section body (call after obtaining l2_id above)
+  6. gopedia_restore(l1_id)    — full document body (use sparingly)
 
 ## Comparison queries ("A vs B")
   Run independent searches per concept, collect l2_id pointers,
@@ -272,6 +273,7 @@ server.registerTool(
 detail presets (controls which fields are returned):
   summary  — doc_id, doc_name, l3_id, score, title, snippet, source_path (cheapest, default)
   standard — summary + project_id, l1_id, l2_id, section_heading, breadcrumb
+  meta     — l3_id, score, title, source_path, tags (ticket metadata: status, priority, domain, etc.)
   full     — all fields including surrounding_context
 
 fields — comma-separated list of exact field names; overrides detail when provided.
@@ -280,9 +282,9 @@ fields — comma-separated list of exact field names; overrides detail when prov
     inputSchema: {
       query: z.string().describe("Search query text"),
       detail: z
-        .enum(["summary", "standard", "full"])
+        .enum(["summary", "standard", "meta", "full"])
         .optional()
-        .describe("Field preset — summary (default) | standard | full"),
+        .describe("Field preset — summary (default) | standard | meta | full"),
       fields: z
         .string()
         .optional()

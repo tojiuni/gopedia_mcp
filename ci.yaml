@@ -1,0 +1,17 @@
+# toji-ci config for gopedia-mcp (read by toji-ci/_parse_ci_config.py).
+# Builds the gopedia-mcp HTTP MCP server image and pushes it to artifact-keeper.
+#   push  -> build + push  artifacts.toji.homes/neunexus/gopedia-mcp:{sha,latest}
+#   pr    -> build only (validation)
+#
+# Tests are skipped here: the package.json suites (test:mcp, test:gardener-*,
+# test:agent) are end-to-end checks that require a live gopedia/gardener
+# backend and cannot run standalone in CI.
+domain: container
+registry: artifacts.toji.homes/neunexus
+images:
+  - name: gopedia-mcp
+    dockerfile: Dockerfile
+    test:
+      skip: true
+notify:
+  artifact_log: true

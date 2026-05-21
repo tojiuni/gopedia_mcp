@@ -415,6 +415,44 @@ source_path must be an absolute path or a repo-relative path that the Gopedia AP
   }
 );
 
+// ── tool: ingest_content ──────────────────────────────────────────────────────
+
+server.registerTool(
+  "gopedia_ingest_content",
+  {
+    description: `Ingest inline content (no source file) into the Gopedia knowledge graph.
+
+Use for documents that have no file on disk — connector-style records (e.g. goquest
+tickets) or ad-hoc text. For repo/git-backed markdown files use gopedia_ingest (path-based)
+instead, so the document can be re-ingested and managed by its source_path.`,
+    inputSchema: {
+      title: z.string().describe("Document title"),
+      content: z.string().describe("Markdown content body to ingest"),
+      source: z
+        .string()
+        .optional()
+        .describe("Logical source identifier; acts as the document's source_path (e.g. goquest/TASK-1)"),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe("Optional tags attached to the document"),
+      collection: z
+        .string()
+        .optional()
+        .describe("Qdrant collection override (default: gopedia_markdown)"),
+    },
+  },
+  async ({ title, content, source, tags, collection }) => {
+    const body: Record<string, unknown> = { title, content };
+    if (source !== undefined) body.source = source;
+    if (tags !== undefined) body.tags = tags;
+    if (collection !== undefined) body.collection = collection;
+
+    const text = await post("/api/ingest_content", body);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
 // ── tool: delete ──────────────────────────────────────────────────────────────
 
 server.registerTool(

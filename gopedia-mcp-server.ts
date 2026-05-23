@@ -18,6 +18,8 @@
  * Environment:
  *   GOPEDIA_API_URL       Full base URL of the Gopedia HTTP API (highest priority)
  *   GOPEDIA_HOST_DOMAIN   Host[:port] or full URL for Gopedia API (default: 127.0.0.1:18787)
+ *                         neunexus: 18787 = cluster prod (use for cluster work/ingest),
+ *                         18799 = local test (Colima, no geneso clone -> ingest "Path not found").
  *   GARDENER_API_URL      Full base URL of Gardener (default from GARDENER_HOST_DOMAIN)
  *   GARDENER_HOST_DOMAIN  Host[:port] or full URL (default: 127.0.0.1:18880)
  */

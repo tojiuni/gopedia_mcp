@@ -473,6 +473,7 @@ server.registerTool(
             metadata: z.record(z.string(), z.unknown()).optional().describe("Arbitrary metadata attached to the document"),
           })
         )
+        .min(1, "documents must contain at least one item")
         .describe("Array of documents to ingest under the project_root"),
       project_id: z
         .number()
@@ -492,8 +493,8 @@ server.registerTool(
   async ({ project_root, documents, project_id, force, prune }) => {
     const body: Record<string, unknown> = { project_root, documents };
     if (project_id !== undefined) body.project_id = project_id;
-    if (force !== undefined) body.force = force;
-    if (prune !== undefined) body.prune = prune;
+    if (force) body.force = true;
+    if (prune) body.prune = true;
 
     const text = await post("/api/ingest/batch", body);
     return { content: [{ type: "text", text }] };

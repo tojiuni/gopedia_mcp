@@ -455,6 +455,51 @@ instead, so the document can be re-ingested and managed by its source_path.`,
   }
 );
 
+// ── tool: ingest_batch ───────────────────────────────────────────────────────
+
+server.registerTool(
+  "gopedia_ingest_batch",
+  {
+    description:
+      "Ingest multiple documents under a logical project_root in one call (server-side register/ingest/finalize, optional prune). Use for folder contributions without sharing a filesystem path.",
+    inputSchema: {
+      project_root: z.string().describe("Logical project root that groups all documents in this batch"),
+      documents: z
+        .array(
+          z.object({
+            source: z.string().describe("Logical source identifier for the document (e.g. goquest/TASK-1)"),
+            content: z.string().describe("Markdown content body to ingest"),
+            title: z.string().optional().describe("Document title"),
+            metadata: z.record(z.string(), z.unknown()).optional().describe("Arbitrary metadata attached to the document"),
+          })
+        )
+        .describe("Array of documents to ingest under the project_root"),
+      project_id: z
+        .number()
+        .int()
+        .optional()
+        .describe("Associate the batch with an existing project integer ID"),
+      force: z
+        .boolean()
+        .optional()
+        .describe("Force full re-ingest even if the project content hash is unchanged. Default: false."),
+      prune: z
+        .boolean()
+        .optional()
+        .describe("Remove documents in the project that are not in this batch. Default: false."),
+    },
+  },
+  async ({ project_root, documents, project_id, force, prune }) => {
+    const body: Record<string, unknown> = { project_root, documents };
+    if (project_id !== undefined) body.project_id = project_id;
+    if (force !== undefined) body.force = force;
+    if (prune !== undefined) body.prune = prune;
+
+    const text = await post("/api/ingest/batch", body);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
 // ── tool: delete ──────────────────────────────────────────────────────────────
 
 server.registerTool(

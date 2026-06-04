@@ -6,14 +6,26 @@
  * can search, ingest, and inspect the knowledge graph directly.
  *
  * Tools:
- *   gopedia_health         — GET /api/health/deps
- *   gopedia_search         — GET /api/search?q=...&format=json  (default: detail=summary)
- *   gopedia_restore        — GET /api/restore?l2_id=...  or  ?l1_id=...
- *   gopedia_ingest         — POST /api/ingest
- *   gopedia_delete         — DELETE /api/documents
- *   gardener_health        — GET Gardener /health
- *   gardener_quality_run   — Dataset → resolve-qrels → eval run → wait → metrics + report
- *   gardener_run_report    — Aggregate metrics, KPI summary, /details failures for a run id
+ *   gopedia_health                — GET /api/health/deps
+ *   gopedia_search                — GET /api/search?q=...&format=json  (default: detail=summary)
+ *   gopedia_restore               — GET /api/restore?l2_id=...  or  ?l1_id=...
+ *   gopedia_ingest                — POST /api/ingest
+ *   gopedia_delete                — DELETE /api/documents
+ *   gardener_health               — GET Gardener /health
+ *   gardener_quality_run          — Dataset → resolve-qrels → eval run → wait → metrics + report
+ *   gardener_run_report           — Aggregate metrics, KPI summary, /details failures for a run id
+ *   memory_save                   — POST /api/memory/save
+ *   memory_index                  — GET  /api/memory/index
+ *   memory_recall                 — POST /api/memory/recall
+ *   memory_get                    — GET  /api/memory/get?id=...
+ *   memory_forget                 — POST /api/memory/forget
+ *   memory_scratch_list           — GET  /api/memory/scratch
+ *   memory_import_claude_code     — POST /api/memory/import/claude-code
+ *   memory_capabilities           — GET  /api/memory/capabilities
+ *   memory_proposals              — GET  /api/memory/proposals
+ *   memory_proposal_accept        — POST /api/memory/proposal/accept
+ *   memory_proposal_skip          — POST /api/memory/proposal/skip
+ *   memory_proposal_reject        — POST /api/memory/proposal/reject
  *
  * Environment:
  *   GOPEDIA_API_URL       Full base URL of the Gopedia HTTP API (highest priority)
@@ -898,6 +910,405 @@ server.registerTool(
     }
 
     return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }] };
+  }
+);
+
+// ── tool: memory_save ────────────────────────────────────────────────────────
+
+server.registerTool(
+  "memory_save",
+  {
+    description: `Save a memory entry to the Gopedia memory subsystem (POST /api/memory/save).
+
+Use to persist structured knowledge — project context, user feedback, reference snippets, or
+agent-generated notes — that should survive across sessions. Returns the saved memory record.`,
+    inputSchema: {
+      Name: z.string().describe("Short identifier / title for this memory"),
+      Description: z.string().describe("One-line description shown in index listings"),
+      Body: z.string().describe("Full content of the memory (markdown supported)"),
+      Type: z
+        .enum(["user", "feedback", "project", "reference"])
+        .describe("Memory type: user | feedback | project | reference"),
+      Scope: z
+        .enum(["global", "project"])
+        .default("project")
+        .describe("Visibility scope: global (all projects) or project (scoped to hint context)"),
+      Tags: z
+        .array(z.string())
+        .default([])
+        .describe("Optional tags for filtering"),
+      Supersedes: z
+        .array(z.string())
+        .default([])
+        .describe("UUIDs of memory entries this one replaces"),
+      Pin: z
+        .boolean()
+        .default(false)
+        .describe("Pin this memory so it is always included in recall results"),
+      Source: z
+        .enum(["user-explicit", "agent-auto", "imported"])
+        .default("user-explicit")
+        .describe("Origin of this memory"),
+      TTLSeconds: z
+        .number()
+        .nullable()
+        .default(null)
+        .describe("Time-to-live in seconds; null means no expiry"),
+      Hint: z
+        .object({
+          Explicit: z.string().default("").describe("Explicit project key override"),
+          GitRemote: z.string().default("").describe("Git remote URL for project resolution"),
+          Cwd: z.string().default("").describe("Working directory for project resolution"),
+        })
+        .default({ Explicit: "", GitRemote: "", Cwd: "" })
+        .describe("Context hints used to resolve project scope"),
+      DisableAssist: z
+        .boolean()
+        .default(false)
+        .describe("If true, skip LLM auto-fill (assistFill) for this save. Use when you are providing fully-formed content and don't want the server to rewrite or enrich it."),
+    },
+  },
+  async ({ Name, Description, Body, Type, Scope, Tags, Supersedes, Pin, Source, TTLSeconds, Hint, DisableAssist }) => {
+    const body: Record<string, unknown> = {
+      Name,
+      Description,
+      Body,
+      Type,
+      Scope,
+      Tags,
+      Supersedes,
+      Pin,
+      Source,
+      TTLSeconds,
+      Hint,
+      DisableAssist,
+    };
+    const text = await post("/api/memory/save", body);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: memory_index ───────────────────────────────────────────────────────
+
+server.registerTool(
+  "memory_index",
+  {
+    description: `List memory entries visible in the current context (GET /api/memory/index).
+
+Returns a lightweight index (id, name, description, type, scope, tags, created_at, pinned).
+Use to browse what memories exist before doing a semantic recall or targeted get.`,
+    inputSchema: {
+      scope: z
+        .enum(["current", "global", "both"])
+        .default("both")
+        .describe("Which scope to list: current project, global, or both"),
+      type: z
+        .string()
+        .optional()
+        .describe("Filter by memory type (user | feedback | project | reference)"),
+      tag: z.string().optional().describe("Filter by a single tag"),
+      project_key: z.string().optional().describe("Explicit project key override"),
+      git_remote: z.string().optional().describe("Git remote URL for project resolution"),
+      cwd: z.string().optional().describe("Working directory for project resolution"),
+    },
+  },
+  async ({ scope, type, tag, project_key, git_remote, cwd }) => {
+    const params = new URLSearchParams({ scope });
+    if (type) params.set("type", type);
+    if (tag) params.set("tag", tag);
+    if (project_key) params.set("project_key", project_key);
+    if (git_remote) params.set("git_remote", git_remote);
+    if (cwd) params.set("cwd", cwd);
+    const text = await get(`/api/memory/index?${params.toString()}`);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: memory_recall ──────────────────────────────────────────────────────
+
+server.registerTool(
+  "memory_recall",
+  {
+    description: `Semantic recall: retrieve the most relevant memories for a query (POST /api/memory/recall).
+
+Performs vector similarity search over saved memories, optionally filtered by scope/type/tag.
+Use at the start of a session to surface applicable context before doing other work.`,
+    inputSchema: {
+      Query: z.string().describe("Natural language query to match against memories"),
+      Scope: z
+        .string()
+        .default("both")
+        .describe("Scope to search: current | global | both"),
+      Type: z.string().optional().describe("Filter by memory type"),
+      Tag: z.string().optional().describe("Filter by tag"),
+      IncludeScratch: z
+        .boolean()
+        .default(true)
+        .describe("Include scratch (unconfirmed) memories in results"),
+      TopK: z
+        .number()
+        .int()
+        .default(8)
+        .describe("Maximum number of results to return"),
+      Hint: z
+        .object({
+          Explicit: z.string().default("").describe("Explicit project key override"),
+          GitRemote: z.string().default("").describe("Git remote URL for project resolution"),
+          Cwd: z.string().default("").describe("Working directory for project resolution"),
+        })
+        .default({ Explicit: "", GitRemote: "", Cwd: "" })
+        .describe("Context hints used to resolve project scope"),
+    },
+  },
+  async ({ Query, Scope, Type, Tag, IncludeScratch, TopK, Hint }) => {
+    const body: Record<string, unknown> = { Query, Scope, IncludeScratch, TopK, Hint };
+    if (Type !== undefined) body["Type"] = Type;
+    if (Tag !== undefined) body["Tag"] = Tag;
+    const text = await post("/api/memory/recall", body);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: memory_get ─────────────────────────────────────────────────────────
+
+server.registerTool(
+  "memory_get",
+  {
+    description: `Fetch a single memory entry by UUID (GET /api/memory/get?id=...).
+
+Returns the full memory record including body, metadata, and provenance.
+Use when you already have the id from memory_index or memory_recall.`,
+    inputSchema: {
+      id: z.string().uuid().describe("UUID of the memory entry to retrieve"),
+    },
+  },
+  async ({ id }) => {
+    const params = new URLSearchParams({ id });
+    const text = await get(`/api/memory/get?${params.toString()}`);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: memory_forget ──────────────────────────────────────────────────────
+
+server.registerTool(
+  "memory_forget",
+  {
+    description: `Soft-delete (forget) a memory entry by UUID (POST /api/memory/forget).
+
+Marks the entry as forgotten so it no longer appears in recall or index results.
+Optionally records a reason for the deletion for audit purposes.`,
+    inputSchema: {
+      id: z.string().uuid().describe("UUID of the memory entry to forget"),
+      reason: z.string().optional().describe("Optional reason for forgetting this memory"),
+    },
+  },
+  async ({ id, reason }) => {
+    const body: Record<string, unknown> = { id };
+    if (reason !== undefined) body["reason"] = reason;
+    const text = await post("/api/memory/forget", body);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: memory_scratch_list ─────────────────────────────────────────────────
+
+server.registerTool(
+  "memory_scratch_list",
+  {
+    description: `List scratch (unconfirmed/draft) memory entries (GET /api/memory/scratch).
+
+Scratch memories are agent-auto-generated notes pending user confirmation.
+Use to review and decide which scratch entries to promote to permanent memories.`,
+    inputSchema: {
+      scope: z
+        .enum(["current", "global", "both"])
+        .default("both")
+        .describe("Which scope to list"),
+      promotable: z
+        .boolean()
+        .default(false)
+        .describe("If true, only return entries eligible for promotion"),
+      project_key: z.string().optional().describe("Explicit project key override"),
+      git_remote: z.string().optional().describe("Git remote URL for project resolution"),
+      cwd: z.string().optional().describe("Working directory for project resolution"),
+    },
+  },
+  async ({ scope, promotable, project_key, git_remote, cwd }) => {
+    const params = new URLSearchParams({ scope, promotable: String(promotable) });
+    if (project_key) params.set("project_key", project_key);
+    if (git_remote) params.set("git_remote", git_remote);
+    if (cwd) params.set("cwd", cwd);
+    const text = await get(`/api/memory/scratch?${params.toString()}`);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: memory_import_claude_code ──────────────────────────────────────────
+
+server.registerTool(
+  "memory_import_claude_code",
+  {
+    description: `Import memories from a Claude Code MEMORY.md file (POST /api/memory/import/claude-code).
+
+Reads a Claude Code memory markdown file and converts its entries into Gopedia memories.
+Supports dry_run mode (default: true) to preview what would be imported without writing.`,
+    inputSchema: {
+      path: z
+        .string()
+        .describe("Absolute path to the Claude Code MEMORY.md (or similar) file to import"),
+      scope: z
+        .enum(["global", "project"])
+        .default("project")
+        .describe("Target scope for imported memories"),
+      project_key: z.string().optional().describe("Explicit project key override"),
+      git_remote: z.string().optional().describe("Git remote URL for project resolution"),
+      cwd: z.string().optional().describe("Working directory for project resolution"),
+      dry_run: z
+        .boolean()
+        .default(true)
+        .describe("If true (default), preview the import without writing any data"),
+    },
+  },
+  async ({ path, scope, project_key, git_remote, cwd, dry_run }) => {
+    const body: Record<string, unknown> = { path, scope, dry_run };
+    if (project_key !== undefined) body["project_key"] = project_key;
+    if (git_remote !== undefined) body["git_remote"] = git_remote;
+    if (cwd !== undefined) body["cwd"] = cwd;
+    const text = await post("/api/memory/import/claude-code", body);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: memory_capabilities ─────────────────────────────────────────────────
+
+server.registerTool(
+  "memory_capabilities",
+  {
+    description: `Report the capabilities of the active memory provider (GET /api/memory/capabilities).
+
+Returns a structured object describing which memory features are available (e.g. semantic recall,
+proposals, scratch, LLM assist). Use to understand what operations are supported before calling
+other memory_* tools.`,
+  },
+  async () => {
+    const text = await get("/api/memory/capabilities");
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: memory_proposals ────────────────────────────────────────────────────
+
+server.registerTool(
+  "memory_proposals",
+  {
+    description: `List pending memory proposals generated by the server-side proposer worker (GET /api/memory/proposals).
+
+Proposals are agent-auto-generated memory candidates awaiting user review.
+Use memory_proposal_accept / memory_proposal_skip / memory_proposal_reject to act on them.`,
+    inputSchema: {
+      scope: z
+        .enum(["current", "global", "both"])
+        .optional()
+        .describe("Which scope to list: current project, global, or both (default: both)"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe("Maximum number of proposals to return"),
+      project_key: z.string().optional().describe("Explicit project key override"),
+      git_remote: z.string().optional().describe("Git remote URL for project resolution"),
+      cwd: z.string().optional().describe("Working directory for project resolution"),
+    },
+  },
+  async ({ scope, limit, project_key, git_remote, cwd }) => {
+    const params = new URLSearchParams();
+    if (scope) params.set("scope", scope);
+    if (limit !== undefined) params.set("limit", String(limit));
+    if (project_key) params.set("project_key", project_key);
+    if (git_remote) params.set("git_remote", git_remote);
+    if (cwd) params.set("cwd", cwd);
+    const qs = params.toString();
+    const text = await get(`/api/memory/proposals${qs ? `?${qs}` : ""}`);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: memory_proposal_accept ──────────────────────────────────────────────
+
+server.registerTool(
+  "memory_proposal_accept",
+  {
+    description: `Accept a memory proposal, optionally applying edits before promoting it (POST /api/memory/proposal/accept).
+
+Promotes the proposal to a permanent memory entry. Pass edits to override specific fields
+(e.g. correcting the Body or Tags) before the entry is written.`,
+    inputSchema: {
+      id: z.string().uuid().describe("UUID of the proposal to accept"),
+      edits: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe("Optional field overrides to apply before promoting (e.g. { Body: '...', Tags: ['x'] })"),
+    },
+  },
+  async ({ id, edits }) => {
+    const body: Record<string, unknown> = { id };
+    if (edits !== undefined) body["edits"] = edits;
+    const text = await post("/api/memory/proposal/accept", body);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: memory_proposal_skip ────────────────────────────────────────────────
+
+server.registerTool(
+  "memory_proposal_skip",
+  {
+    description: `Skip a memory proposal (POST /api/memory/proposal/skip).
+
+Marks the proposal as skipped without promoting or rejecting it. An optional cooldown period
+prevents the same proposal from re-surfacing too quickly.`,
+    inputSchema: {
+      id: z.string().uuid().describe("UUID of the proposal to skip"),
+      cooldown_hours: z
+        .number()
+        .min(0)
+        .optional()
+        .describe("Hours before this proposal may surface again (default: server-configured cooldown)"),
+    },
+  },
+  async ({ id, cooldown_hours }) => {
+    const body: Record<string, unknown> = { id };
+    if (cooldown_hours !== undefined) body["cooldown_hours"] = cooldown_hours;
+    const text = await post("/api/memory/proposal/skip", body);
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── tool: memory_proposal_reject ──────────────────────────────────────────────
+
+server.registerTool(
+  "memory_proposal_reject",
+  {
+    description: `Permanently reject a memory proposal (POST /api/memory/proposal/reject).
+
+Marks the proposal as rejected so it is never promoted and will not re-surface.
+Optionally records a reason for audit / feedback purposes.`,
+    inputSchema: {
+      id: z.string().uuid().describe("UUID of the proposal to reject"),
+      reason: z
+        .string()
+        .optional()
+        .describe("Optional human-readable reason for the rejection (used for audit / proposer feedback)"),
+    },
+  },
+  async ({ id, reason }) => {
+    const body: Record<string, unknown> = { id };
+    if (reason !== undefined) body["reason"] = reason;
+    const text = await post("/api/memory/proposal/reject", body);
+    return { content: [{ type: "text", text }] };
   }
 );
 

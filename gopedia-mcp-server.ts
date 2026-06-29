@@ -53,6 +53,8 @@ const normalizedHostDomain = /^https?:\/\//.test(hostDomainFromEnv)
   : `http://${hostDomainFromEnv}`;
 const BASE_URL = (apiUrlFromEnv ?? normalizedHostDomain).replace(/\/$/, "");
 
+const API_TOKEN = process.env["GOPEDIA_API_TOKEN"]?.trim() ?? "";
+
 const gardenerApiUrlFromEnv = process.env["GARDENER_API_URL"]?.trim();
 const gardenerHostFromEnv = process.env["GARDENER_HOST_DOMAIN"]?.trim() ?? "127.0.0.1:18880";
 const normalizedGardenerHost = /^https?:\/\//.test(gardenerHostFromEnv)
@@ -110,9 +112,15 @@ function toEnvelope(raw: unknown, httpOk: boolean): Envelope {
   return { ok: true, data: raw };
 }
 
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  return API_TOKEN
+    ? { Authorization: `Bearer ${API_TOKEN}`, ...extra }
+    : { ...extra };
+}
+
 async function get(path: string): Promise<string> {
   try {
-    const res = await fetch(`${BASE_URL}${path}`);
+    const res = await fetch(`${BASE_URL}${path}`, { headers: authHeaders() });
     const text = await res.text();
     let parsed: unknown;
     try { parsed = JSON.parse(text); } catch { parsed = { raw: text, status: res.status }; }
@@ -126,7 +134,7 @@ async function del(path: string, body: unknown): Promise<string> {
   try {
     const res = await fetch(`${BASE_URL}${path}`, {
       method: "DELETE",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
     const text = await res.text();
@@ -142,7 +150,7 @@ async function post(path: string, body: unknown): Promise<string> {
   try {
     const res = await fetch(`${BASE_URL}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
     const text = await res.text();
@@ -1446,14 +1454,23 @@ Always surface the numeric aggregate metrics and a short summary of failure samp
 const httpPort = process.env["MCP_HTTP_PORT"] ? parseInt(process.env["MCP_HTTP_PORT"], 10) : undefined;
 
 if (httpPort) {
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const { randomUUID } = await import("node:crypto");
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
+  await server.connect(transport);
   const httpServer = createServer(async (req, res) => {
-    await transport.handleRequest(req, res);
+    try {
+      await transport.handleRequest(req, res);
+    } catch (err) {
+      process.stderr.write(`[mcp-http-error] ${err}\n`);
+      if (!res.headersSent) {
+        res.writeHead(500, { "content-type": "text/plain" });
+        res.end(String(err));
+      }
+    }
   });
   httpServer.listen(httpPort, () => {
     process.stderr.write(`gopedia-mcp HTTP listening on :${httpPort}\n`);
   });
-  await server.connect(transport);
 } else {
   const transport = new StdioServerTransport();
   await server.connect(transport);

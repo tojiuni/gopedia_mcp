@@ -1,0 +1,14 @@
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultStaticSecret
+metadata:
+  name: gopedia-api-token
+  namespace: gopedia
+spec:
+  type: kv-v2
+  mount: secret
+  path: neunexus/gopedia/api-token
+  destination:
+    name: gopedia-api-token
+    create: true
+  refreshAfter: 30m
+  vaultAuthRef: default

@@ -38,6 +38,11 @@ spec:
           value: '8081'
         - name: GARDENER_API_URL
           value: http://gardener-gopedia-svc.gardener-gopedia.svc:18880
+        - name: GOPEDIA_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gopedia-api-token
+              key: access_token
         image: artifacts.toji.homes/neunexus/gopedia-mcp:337f7aa
         imagePullPolicy: IfNotPresent
         name: gopedia-mcp
